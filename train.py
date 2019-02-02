@@ -301,8 +301,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
-        for k in range(len(loss)):
-            loss[j].backward(retain_graph=True)
+        loss_sum = sum(loss)
+        loss_sum.backward()
         optimizer.step()
 
         # measure elapsed time
