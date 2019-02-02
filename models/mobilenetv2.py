@@ -6,8 +6,10 @@ arXiv preprint arXiv:1801.04381.
 import from https://github.com/tonylins/pytorch-mobilenet-v2
 """
 
+import torch
 import torch.nn as nn
 import math
+import os.path
 
 __all__ = ['mobilenetv2']
 
@@ -88,8 +90,27 @@ class InvertedResidual(nn.Module):
             return self.conv(x)
 
 
+class fc_block(nn.Module):
+    def __init__(self, inplanes, planes, drop_rate=0.15):
+        super(fc_block, self).__init__()
+        self.fc = nn.Linear(inplanes, planes)
+        self.bn = nn.BatchNorm1d(planes)
+        if drop_rate > 0:
+            self.dropout = nn.Dropout(drop_rate)
+        self.relu = nn.ReLU(inplace=True)
+        self.drop_rate = drop_rate
+
+    def forward(self, x):
+        x = self.fc(x)
+        x = self.bn(x)
+        if self.drop_rate > 0:
+            x = self.dropout(x)
+        x = self.relu(x)
+        return x
+
+
 class MobileNetV2(nn.Module):
-    def __init__(self, num_classes=1000, input_size=224, width_mult=1.):
+    def __init__(self, num_attributes=40, input_size=224, width_mult=1.):
         super(MobileNetV2, self).__init__()
         # setting of inverted residual blocks
         self.cfgs = [
@@ -104,7 +125,6 @@ class MobileNetV2(nn.Module):
         ]
 
         # building first layer
-        assert input_size % 32 == 0
         input_channel = _make_divisible(32 * width_mult, 8)
         layers = [conv_3x3_bn(3, input_channel, 2)]
         # building inverted residual blocks
@@ -120,8 +140,11 @@ class MobileNetV2(nn.Module):
         # building last several layers
         output_channel = _make_divisible(1280 * width_mult, 8) if width_mult > 1.0 else 1280
         self.conv = conv_1x1_bn(input_channel, output_channel)
-        self.avgpool = nn.AvgPool2d(input_size // 32, stride=1)
-        self.classifier = nn.Linear(output_channel, num_classes)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.stem = fc_block(output_channel, 512)
+        for i in range(num_attributes):
+            setattr(self, 'classifier' + str(i).zfill(2), nn.Sequential(fc_block(512, 256), nn.Linear(256, 2)))
+        self.num_attributes = num_attributes
 
         self._initialize_weights()
 
@@ -130,8 +153,14 @@ class MobileNetV2(nn.Module):
         x = self.conv(x)
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
-        x = self.classifier(x)
-        return x
+        x = self.stem(x)
+
+        y = []
+        for i in range(self.num_attributes):
+            classifier = getattr(self, 'classifier' + str(i).zfill(2))
+            y.append(classifier(x))
+
+        return y
 
     def _initialize_weights(self):
         for m in self.modules():
@@ -148,9 +177,27 @@ class MobileNetV2(nn.Module):
                 m.weight.data.normal_(0, 0.01)
                 m.bias.data.zero_()
 
-def mobilenetv2(**kwargs):
+
+def init_pretrained_weights(model, path=os.path.expanduser('~/.torch/models/mobilenetv2-0c6065bc.pth')):
+    """
+    Initialize model with pretrained weights.
+    Layers that don't match with pretrained layers in name or size are kept unchanged.
+    """
+    #pretrain_dict = model_zoo.load_url(model_url)
+    pretrain_dict = torch.load(path)
+    model_dict = model.state_dict()
+    pretrain_dict = {k: v for k, v in pretrain_dict.items() if k in model_dict and model_dict[k].size() == v.size()}
+    model_dict.update(pretrain_dict)
+    model.load_state_dict(model_dict)
+    print("Initialized model with pretrained weights from {}".format(path))
+
+
+def mobilenetv2(pretrained=True, **kwargs):
     """
     Constructs a MobileNet V2 model
     """
-    return MobileNetV2(**kwargs)
+    model = MobileNetV2(**kwargs)
+    if pretrained:
+        init_pretrained_weights(model)
+    return model
 
